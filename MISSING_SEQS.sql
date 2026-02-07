@@ -1,13 +1,28 @@
 WITH
 /* ============================================================
- * [1] 기준 날짜 데이터만 추출 (실제 테이블 TARGET_HISTORY 기준)
+ * [1] 샘플 거래 이력
+ * ============================================================ */
+TRADE_HISTORY AS (
+    SELECT '20230128' AS TR_DT, '00002' AS SEQ FROM DUAL UNION ALL
+    SELECT '20230128', '00003' FROM DUAL UNION ALL
+    SELECT '20230128', '00004' FROM DUAL UNION ALL
+    SELECT '20230128', '00006' FROM DUAL UNION ALL
+    SELECT '20230128', '00008' FROM DUAL UNION ALL
+    SELECT '20230128', '00010' FROM DUAL UNION ALL
+    SELECT '20230128', '00011' FROM DUAL UNION ALL
+    SELECT '20230128', '00013' FROM DUAL UNION ALL
+    SELECT '20230128', '00020' FROM DUAL UNION ALL
+    SELECT '20230128', '00023' FROM DUAL
+),
+/* ============================================================
+ * [1-1] 기준 날짜 데이터만 추출
  * ============================================================ */
 TARGET_HISTORY AS (
     SELECT
         TR_DT,
         SEQ
     FROM
-        TARGET_HISTORY
+        TRADE_HISTORY
     WHERE
         TR_DT = '20230128'
 ),
