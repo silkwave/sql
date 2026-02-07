@@ -15,6 +15,7 @@
 -- =============================================================================
 -- 1. 테이블 재생성
 -- =============================================================================
+-- 기존 테스트용 테이블을 제거한 뒤 재생성합니다.
 BEGIN
     EXECUTE IMMEDIATE 'DROP TABLE BRANCH_HISTORY PURGE';
 EXCEPTION
@@ -28,6 +29,7 @@ END;
 -- =============================================================================
 -- 2. 테이블 생성 및 주석
 -- =============================================================================
+-- 지점 이력 정보를 저장하는 기준 테이블입니다.
 CREATE TABLE BRANCH_HISTORY (
     BRANCH_CD       VARCHAR2(4)   NOT NULL,
     REG_SEQ         NUMBER        NOT NULL,
@@ -63,6 +65,7 @@ CREATE INDEX IDX_BRANCH_HISTORY_ACCT_BRANCH
 CREATE INDEX IDX_BRANCH_HISTORY_DTSEQ
     ON BRANCH_HISTORY (OPEN_DT, CLOSE_DT, BRANCH_CD, REG_SEQ DESC, ACCT_BRANCH_CD);
 
+-- 지점별 최신 이력 조회 성능 향상
 CREATE INDEX IDX_BRANCH_HISTORY_BR_REGSEQ
     ON BRANCH_HISTORY (BRANCH_CD, REG_SEQ DESC);
 
@@ -75,7 +78,8 @@ CREATE INDEX IDX_BRANCH_HISTORY_BR_REGSEQ
 -- =============================================================================
 -- 3-0. 샘플 데이터(필요 시 사용)
 -- =============================================================================
-/*
+-- 기준일 시뮬레이션을 위한 테스트 데이터입니다.
+
 -- 2006년 개설
 INSERT INTO BRANCH_HISTORY VALUES ('0004', 1, '종로4가', '0004', '20060101', '99991231', 'SYS', SYSTIMESTAMP, NULL);
 INSERT INTO BRANCH_HISTORY VALUES ('0005', 1, '종로5가', '0005', '20060101', '99991231', 'SYS', SYSTIMESTAMP, NULL);
@@ -95,11 +99,12 @@ INSERT INTO BRANCH_HISTORY VALUES ('0006', 2, '종로6가', '0009', '20120521', 
 INSERT INTO BRANCH_HISTORY VALUES ('0009', 2, '종로9가', '0008', '20150422', '99991231', 'SYS', SYSTIMESTAMP, '통폐합');
 
 COMMIT;
-*/
+
 
 -- =============================================================================
 -- 3-0-1. 기준일별 유효 체인 도식(샘플 데이터 기준)
 -- =============================================================================
+-- 기준일별 체인 흐름을 사람이 읽기 쉽게 정리한 예시입니다.
 -- 2011-07-21 기준
 -- 0007 → 0006
 -- 0006 → 0006
@@ -139,7 +144,8 @@ COMMIT;
 -- =============================================================================
 -- 3-0-2. 2015-04-22 기준 조회 SQL 예시
 -- =============================================================================
-/*
+-- 기준일 시점의 유효 지점만 대상으로 체인을 추적합니다.
+
 VAR TARGET_DATE VARCHAR2(8);
 EXEC :TARGET_DATE := '20150422';
 
@@ -151,6 +157,7 @@ EFFECTIVE_HIST AS (
            ACCT_BRANCH_CD,
            OPEN_DT,
            CLOSE_DT,
+           -- 기준일 포함 이력을 우선하고, 동일 지점은 최신(REG_SEQ DESC)만 선택
            ROW_NUMBER() OVER (
                PARTITION BY BRANCH_CD
                ORDER BY
@@ -167,6 +174,7 @@ BASE_BRANCH AS (
            BRANCH_CD,
            BRANCH_NM,
            ACCT_BRANCH_CD
+      -- 지점별 유효 이력 1건만 추출
       FROM EFFECTIVE_HIST ehs
      WHERE ehs.RN = 1
 ),
@@ -177,6 +185,7 @@ BRANCH_CHAIN (
     CUR_ACCT_CD,
     LVL
 ) AS (
+    -- 시작 지점(자기 자신)부터 체인을 시작
     SELECT
         BRANCH_CD,
         BRANCH_NM,
@@ -185,6 +194,7 @@ BRANCH_CHAIN (
         1
       FROM BASE_BRANCH bbr
     UNION ALL
+    -- 회계 지점 코드를 따라 체인을 계속 연결
     SELECT /*+ USE_HASH(bbr) CARDINALITY(bch 100000) */
         bch.START_BRANCH_CD,
         bch.START_BRANCH_NM,
@@ -194,16 +204,20 @@ BRANCH_CHAIN (
       FROM BRANCH_CHAIN bch
       JOIN BASE_BRANCH bbr
         ON bch.CUR_ACCT_CD = bbr.BRANCH_CD
+     -- 자기 자신으로 향하는 경우는 추가 확장을 방지
      WHERE bch.CUR_BRANCH_CD <> bch.CUR_ACCT_CD
 )
+-- 순환 참조가 있을 경우 표시
 CYCLE CUR_BRANCH_CD SET IS_CYCLE TO 'Y' DEFAULT 'N'
 SELECT
     :TARGET_DATE AS TARGET_DATE,
     START_BRANCH_CD AS BRANCH_CD,
     START_BRANCH_NM AS BRANCH_NM,
+    -- 체인 깊이(LVL)가 가장 큰 지점이 최종 회계 지점
     MAX(CUR_BRANCH_CD) KEEP (DENSE_RANK LAST ORDER BY LVL) AS FINAL_ACCT_BRANCH_CD
 FROM
     BRANCH_CHAIN bch
+-- 순환 제거
 WHERE
     IS_CYCLE = 'N'
 GROUP BY
@@ -211,12 +225,13 @@ GROUP BY
     START_BRANCH_NM
 ORDER BY
     BRANCH_CD;
-*/
+
 
 -- =============================================================================
 -- 3-0-3. 2015-04-22 기준 최종 회계 지점만 조회 SQL 예시
 -- =============================================================================
-/*
+-- 지점명 없이 최종 회계 지점만 반환하는 경량 조회입니다.
+
 VAR TARGET_DATE VARCHAR2(8);
 EXEC :TARGET_DATE := '20150422';
 
@@ -228,6 +243,7 @@ EFFECTIVE_HIST AS (
            ACCT_BRANCH_CD,
            OPEN_DT,
            CLOSE_DT,
+           -- 기준일 포함 이력을 우선하고, 동일 지점은 최신(REG_SEQ DESC)만 선택
            ROW_NUMBER() OVER (
                PARTITION BY BRANCH_CD
                ORDER BY
@@ -244,6 +260,7 @@ BASE_BRANCH AS (
            BRANCH_CD,
            BRANCH_NM,
            ACCT_BRANCH_CD
+      -- 지점별 유효 이력 1건만 추출
       FROM EFFECTIVE_HIST ehs
      WHERE ehs.RN = 1
 ),
@@ -254,6 +271,7 @@ BRANCH_CHAIN (
     CUR_ACCT_CD,
     LVL
 ) AS (
+    -- 시작 지점(자기 자신)부터 체인을 시작
     SELECT
         BRANCH_CD,
         BRANCH_NM,
@@ -262,6 +280,7 @@ BRANCH_CHAIN (
         1
       FROM BASE_BRANCH bbr
     UNION ALL
+    -- 회계 지점 코드를 따라 체인을 계속 연결
     SELECT /*+ USE_HASH(bbr) CARDINALITY(bch 100000) */
         bch.START_BRANCH_CD,
         bch.START_BRANCH_NM,
@@ -271,19 +290,22 @@ BRANCH_CHAIN (
       FROM BRANCH_CHAIN bch
       JOIN BASE_BRANCH bbr
         ON bch.CUR_ACCT_CD = bbr.BRANCH_CD
+     -- 자기 자신으로 향하는 경우는 추가 확장을 방지
      WHERE bch.CUR_BRANCH_CD <> bch.CUR_ACCT_CD
 )
+-- 순환 참조가 있을 경우 표시
 CYCLE CUR_BRANCH_CD SET IS_CYCLE TO 'Y' DEFAULT 'N'
 SELECT
     :TARGET_DATE AS TARGET_DATE,
     START_BRANCH_CD AS BRANCH_CD,
+    -- 체인 깊이(LVL)가 가장 큰 지점이 최종 회계 지점
     MAX(CUR_BRANCH_CD) KEEP (DENSE_RANK LAST ORDER BY LVL) AS FINAL_ACCT_BRANCH_CD
 FROM
     BRANCH_CHAIN bch
+-- 순환 제거
 WHERE
     IS_CYCLE = 'N'
 GROUP BY
     START_BRANCH_CD
 ORDER BY
     BRANCH_CD;
-*/
