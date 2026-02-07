@@ -1,9 +1,12 @@
-/* 임시 테이블 생성 */
+/* ============================================================
+ * [1] 계산 요소 분해용 임시 테이블 생성
+ *   - 오라클: PRIVATE TEMPORARY TABLE (세션/트랜잭션 범위)
+ * ============================================================ */
 CREATE PRIVATE TEMPORARY TABLE ORA$PTT_CALC_ELEMENTS_TEMP (
-    RPT_ACCC VARCHAR2(20),  -- 보고 계정 코드
-    SIGN_CD CHAR(1),         -- 부호
-    REF_RPT_ACCC VARCHAR2(100),  -- 참조 보고 계정 코드
-    LVL NUMBER               -- 계층 레벨
+    RPT_ACCC      VARCHAR2(20),  -- 보고 계정 코드
+    SIGN_CD       CHAR(1),       -- 부호
+    REF_RPT_ACCC  VARCHAR2(100), -- 참조 보고 계정 코드
+    LVL           NUMBER         -- 계층 레벨
 );
 
 /* 임시 테이블에 데이터 삽입 */
@@ -13,7 +16,7 @@ SELECT
     CASE
         WHEN LEVEL = 1 THEN NULL
         ELSE SUBSTR(REGEXP_SUBSTR(CLC_FML_CNTN, '([+-]?[^+-]+)', 1, LEVEL), 1, 1)
-    END,    
+    END,
     CASE
         WHEN LEVEL = 1 THEN TRIM(SUBSTR(REGEXP_SUBSTR(CLC_FML_CNTN, '([+-]?[^+-]+)', 1, LEVEL), 1))
         ELSE TRIM(SUBSTR(REGEXP_SUBSTR(CLC_FML_CNTN, '([+-]?[^+-]+)', 1, LEVEL), 2))
@@ -25,40 +28,45 @@ CONNECT BY
     PRIOR RPT_ACCC = RPT_ACCC
     AND PRIOR SYS_GUID() IS NOT NULL
     AND LEVEL <= REGEXP_COUNT(CLC_FML_CNTN, '[^+-]+')
-;    
+;
 
 
-/* *******************  임시 테이블 확인 */
+/* 임시 테이블 확인 */
 SELECT * FROM ORA$PTT_CALC_ELEMENTS_TEMP;
 
-/* *******************  임시 테이블 확인 */
+/* 임시 테이블 확인 (원장과 조인) */
 SELECT
     CE.RPT_ACCC,
     CE.SIGN_CD,
     CE.REF_RPT_ACCC,
-    GL.AMT ,
+    GL.AMT,
     GL.RPT_ACCC
 FROM
     ORA$PTT_CALC_ELEMENTS_TEMP CE
     JOIN GENERAL_LEDGER GL ON CE.REF_RPT_ACCC = GL.RPT_ACCC
-ORDER BY    CE.RPT_ACCC , CE.LVL
+ORDER BY
+    CE.RPT_ACCC,
+    CE.LVL
 ;
 
-/* *******************  */
-/* 계산된 금액을 저장할 임시 테이블 생성 */
+/* ============================================================
+ * [2] 계산 합계 임시 테이블 생성
+ * ============================================================ */
 CREATE PRIVATE TEMPORARY TABLE ORA$PTT_AGGREGATED_AMOUNTS_TEMP (
-    RPT_ACCC VARCHAR2(20),  -- 보고 계정 코드
-    CALCULATED_AMOUNT NUMBER -- 계산된 금액
+    RPT_ACCC            VARCHAR2(20), -- 보고 계정 코드
+    CALCULATED_AMOUNT   NUMBER        -- 계산된 금액
 );
 
 /* 임시 테이블에 계산된 금액 삽입 */
 INSERT INTO ORA$PTT_AGGREGATED_AMOUNTS_TEMP (RPT_ACCC, CALCULATED_AMOUNT)
 SELECT
     CE.RPT_ACCC,
-    SUM(CASE
-        WHEN CE.SIGN_CD = '-' THEN -GL.AMT 
-        ELSE GL.AMT 
-    END) AS CALCULATED_AMOUNT
+    SUM(
+        CASE
+            WHEN CE.SIGN_CD = '-' THEN -GL.AMT
+            ELSE GL.AMT
+        END
+    ) AS CALCULATED_AMOUNT
 FROM
     ORA$PTT_CALC_ELEMENTS_TEMP CE
     JOIN GENERAL_LEDGER GL ON CE.REF_RPT_ACCC = GL.RPT_ACCC
@@ -66,14 +74,16 @@ GROUP BY
     CE.RPT_ACCC;
     
 
-/* *******************  임시 테이블 확인 */
-SELECT * FROM ORA$PTT_AGGREGATED_AMOUNTS_TEMP ORDER BY RPT_ACCC	;
+/* 임시 테이블 확인 */
+SELECT * FROM ORA$PTT_AGGREGATED_AMOUNTS_TEMP ORDER BY RPT_ACCC;
     
 
-/* 최종 결과를 저장할 임시 테이블 생성 */
+/* ============================================================
+ * [3] 최종 결과 임시 테이블 생성
+ * ============================================================ */
 CREATE PRIVATE TEMPORARY TABLE ORA$PTT_FINAL_RESULTS_TEMP (
-    RPT_ACCC VARCHAR2(20),  -- 보고 계정 코드
-    FINAL_AMOUNT NUMBER      -- 최종 금액
+    RPT_ACCC      VARCHAR2(20), -- 보고 계정 코드
+    FINAL_AMOUNT  NUMBER        -- 최종 금액
 );
 
 
@@ -81,10 +91,12 @@ CREATE PRIVATE TEMPORARY TABLE ORA$PTT_FINAL_RESULTS_TEMP (
 INSERT INTO ORA$PTT_FINAL_RESULTS_TEMP (RPT_ACCC, FINAL_AMOUNT)
 SELECT
     E.RPT_ACCC,
-    SUM(CASE
-        WHEN E.SIGN_CD = '-' THEN -1 * A.CALCULATED_AMOUNT
-        ELSE A.CALCULATED_AMOUNT
-    END) AS FINAL_AMOUNT
+    SUM(
+        CASE
+            WHEN E.SIGN_CD = '-' THEN -1 * A.CALCULATED_AMOUNT
+            ELSE A.CALCULATED_AMOUNT
+        END
+    ) AS FINAL_AMOUNT
 FROM
     ORA$PTT_CALC_ELEMENTS_TEMP E
     INNER JOIN ORA$PTT_AGGREGATED_AMOUNTS_TEMP A ON E.REF_RPT_ACCC = A.RPT_ACCC
@@ -103,3 +115,21 @@ ORDER BY
     
 /* 롤백 */
 ROLLBACK; -- 작업 취소 및 임시 테이블 삭제
+
+/* ============================================================
+ * [4] 사이베이스(ASE) 임시 테이블 비교 참고
+ *   - 오라클 PTT: CREATE PRIVATE TEMPORARY TABLE ... (세션/트랜잭션 범위)
+ *   - 사이베이스: #임시테이블은 세션 범위, ##전역임시는 서버 전체 범위
+ *   - 사이베이스는 커밋/롤백과 무관하게 세션 종료 시 #임시테이블이 삭제됨
+ *
+ *   예시(사이베이스 ASE):
+ *     CREATE TABLE #CALC_ELEMENTS_TEMP (
+ *         RPT_ACCC     VARCHAR(20),
+ *         SIGN_CD      CHAR(1),
+ *         REF_RPT_ACCC VARCHAR(100),
+ *         LVL          INT
+ *     );
+ *
+ *     INSERT INTO #CALC_ELEMENTS_TEMP (...)
+ *     SELECT ...;
+ * ============================================================ */

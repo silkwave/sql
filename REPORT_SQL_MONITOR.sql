@@ -1,3 +1,4 @@
+-- [1] 최신 SQL 실행 모니터링 목록
 SELECT
     SQL_ID,         -- SQL 문을 고유하게 식별하는 ID
     SQL_EXEC_ID,    -- 특정 SQL 실행에 대한 실행 ID
@@ -10,16 +11,19 @@ FROM
 ORDER BY
     SQL_EXEC_START DESC; -- 가장 최근에 실행된 SQL부터 정렬
 
- 
+
+-- [2] SQL 모니터 보고서 (SQL_ID/SQL_EXEC_ID 지정)
 SELECT
-    DBMS_SQLTUNE.REPORT_SQL_MONITOR(SQL_ID=> 'c7u0y4hcxh36n', -- 분석할 SQL 문 ID
-                                    SQL_EXEC_ID=> '16777256', -- 분석할 SQL 실행 ID
-                                    TYPE=> 'TEXT',           -- 보고서 형식 (TEXT 형식)
-                                    REPORT_LEVEL=> 'ALL',    -- 보고서 세부 수준 (모든 정보 포함)
-                                    EVENT_DETAIL=> 'YES')    -- 대기 이벤트 정보를 포함 여부
+    DBMS_SQLTUNE.REPORT_SQL_MONITOR(
+        SQL_ID       => 'c7u0y4hcxh36n', -- 분석할 SQL 문 ID
+        SQL_EXEC_ID  => '16777256',      -- 분석할 SQL 실행 ID
+        TYPE         => 'TEXT',          -- 보고서 형식 (TEXT 형식)
+        REPORT_LEVEL => 'ALL',           -- 보고서 세부 수준 (모든 정보 포함)
+        EVENT_DETAIL => 'YES'            -- 대기 이벤트 정보를 포함 여부
+    )
 FROM DUAL;
 
-
+-- [3] 병렬 세션 실행 이력 (ASH)
 SELECT
     SQL_ID,
     SESSION_ID,
@@ -35,20 +39,20 @@ WHERE
 ORDER BY
     SAMPLE_TIME DESC;
 
-
+-- [4] 특정 SQL의 대기 이벤트 분석 (ASH)
 SELECT
     EVENT,
     WAIT_CLASS,
     TOTAL_WAITS,
     TIME_WAITED
 FROM
-    GV$ACTIVE_SESSION_HISTORY  /* 특정 SQL ID에 대한 대기 이벤트 분석 */
+    GV$ACTIVE_SESSION_HISTORY
 WHERE
-    SQL_ID = 'd9p3tq1x5kd9g'
+    SQL_ID = 'd9p3tq1x5kd9g' -- 분석 대상 SQL_ID
 ORDER BY
     TIME_WAITED DESC;
 
-
+-- [5] 최근 1시간 실행 SQL 모니터링
 SELECT
     SQL_ID,
     SQL_EXEC_ID,
@@ -59,6 +63,6 @@ SELECT
 FROM
     GV$SQL_MONITOR
 WHERE
-    SQL_EXEC_START >= SYSDATE - (1/24) /* 최근 1시간 동안 실행된 SQL */
+    SQL_EXEC_START >= SYSDATE - (1 / 24) -- 최근 1시간 동안 실행된 SQL
 ORDER BY
     SQL_EXEC_START DESC;
