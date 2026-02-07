@@ -59,9 +59,12 @@ COMMENT ON COLUMN BRANCH_HISTORY.REMARK          IS '비고';
 CREATE INDEX IDX_BRANCH_HISTORY_ACCT_BRANCH
     ON BRANCH_HISTORY (ACCT_BRANCH_CD, BRANCH_CD);
 
--- 기준일 범위 조회 및 커버링 성능 향상
-CREATE INDEX IDX_BRANCH_HISTORY_ALL
-    ON BRANCH_HISTORY (OPEN_DT, CLOSE_DT, ACCT_BRANCH_CD, BRANCH_CD);
+-- 기준일 범위 조회 및 최신 이력 정렬 성능 향상
+CREATE INDEX IDX_BRANCH_HISTORY_DTSEQ
+    ON BRANCH_HISTORY (OPEN_DT, CLOSE_DT, BRANCH_CD, REG_SEQ DESC, ACCT_BRANCH_CD);
+
+CREATE INDEX IDX_BRANCH_HISTORY_BR_REGSEQ
+    ON BRANCH_HISTORY (BRANCH_CD, REG_SEQ DESC);
 
 -- =============================================================================
 -- 3. 재귀 CTE: 기준일 유효 지점만 체인 추적
@@ -123,8 +126,164 @@ COMMIT;
 -- 0008 → 0008
 -- 0004 → 0004
 -- 0005 → 0005
+--
+-- 2015-04-22 기준(최종 회계 지점만 표기)
+-- 0007 → 0008
+-- 0006 → 0008
+-- 0009 → 0008
+-- 0010 → 0010
+-- 0008 → 0008
+-- 0004 → 0004
+-- 0005 → 0005
 
 -- =============================================================================
--- 3-1. 재귀 CTE 쿼리
+-- 3-0-2. 2015-04-22 기준 조회 SQL 예시
+-- =============================================================================
+/*
+VAR TARGET_DATE VARCHAR2(8);
+EXEC :TARGET_DATE := '20150422';
 
+WITH
+EFFECTIVE_HIST AS (
+    SELECT /*+ MATERIALIZE INDEX_RS_ASC(bht IDX_BRANCH_HISTORY_DTSEQ) */
+           BRANCH_CD,
+           BRANCH_NM,
+           ACCT_BRANCH_CD,
+           OPEN_DT,
+           CLOSE_DT,
+           ROW_NUMBER() OVER (
+               PARTITION BY BRANCH_CD
+               ORDER BY
+                   CASE
+                       WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0
+                       ELSE 1
+                   END,
+                   REG_SEQ DESC
+           ) AS RN
+      FROM BRANCH_HISTORY bht
+),
+BASE_BRANCH AS (
+    SELECT /*+ MATERIALIZE */
+           BRANCH_CD,
+           BRANCH_NM,
+           ACCT_BRANCH_CD
+      FROM EFFECTIVE_HIST ehs
+     WHERE ehs.RN = 1
+),
+BRANCH_CHAIN (
+    START_BRANCH_CD,
+    START_BRANCH_NM,
+    CUR_BRANCH_CD,
+    CUR_ACCT_CD,
+    LVL
+) AS (
+    SELECT
+        BRANCH_CD,
+        BRANCH_NM,
+        BRANCH_CD,
+        ACCT_BRANCH_CD,
+        1
+      FROM BASE_BRANCH bbr
+    UNION ALL
+    SELECT /*+ USE_HASH(bbr) CARDINALITY(bch 100000) */
+        bch.START_BRANCH_CD,
+        bch.START_BRANCH_NM,
+        bbr.BRANCH_CD,
+        bbr.ACCT_BRANCH_CD,
+        bch.LVL + 1
+      FROM BRANCH_CHAIN bch
+      JOIN BASE_BRANCH bbr
+        ON bch.CUR_ACCT_CD = bbr.BRANCH_CD
+     WHERE bch.CUR_BRANCH_CD <> bch.CUR_ACCT_CD
+)
+CYCLE CUR_BRANCH_CD SET IS_CYCLE TO 'Y' DEFAULT 'N'
+SELECT
+    :TARGET_DATE AS TARGET_DATE,
+    START_BRANCH_CD AS BRANCH_CD,
+    START_BRANCH_NM AS BRANCH_NM,
+    MAX(CUR_BRANCH_CD) KEEP (DENSE_RANK LAST ORDER BY LVL) AS FINAL_ACCT_BRANCH_CD
+FROM
+    BRANCH_CHAIN bch
+WHERE
+    IS_CYCLE = 'N'
+GROUP BY
+    START_BRANCH_CD,
+    START_BRANCH_NM
+ORDER BY
+    BRANCH_CD;
+*/
 
+-- =============================================================================
+-- 3-0-3. 2015-04-22 기준 최종 회계 지점만 조회 SQL 예시
+-- =============================================================================
+/*
+VAR TARGET_DATE VARCHAR2(8);
+EXEC :TARGET_DATE := '20150422';
+
+WITH
+EFFECTIVE_HIST AS (
+    SELECT /*+ MATERIALIZE INDEX_RS_ASC(bht IDX_BRANCH_HISTORY_DTSEQ) */
+           BRANCH_CD,
+           BRANCH_NM,
+           ACCT_BRANCH_CD,
+           OPEN_DT,
+           CLOSE_DT,
+           ROW_NUMBER() OVER (
+               PARTITION BY BRANCH_CD
+               ORDER BY
+                   CASE
+                       WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0
+                       ELSE 1
+                   END,
+                   REG_SEQ DESC
+           ) AS RN
+      FROM BRANCH_HISTORY bht
+),
+BASE_BRANCH AS (
+    SELECT /*+ MATERIALIZE */
+           BRANCH_CD,
+           BRANCH_NM,
+           ACCT_BRANCH_CD
+      FROM EFFECTIVE_HIST ehs
+     WHERE ehs.RN = 1
+),
+BRANCH_CHAIN (
+    START_BRANCH_CD,
+    START_BRANCH_NM,
+    CUR_BRANCH_CD,
+    CUR_ACCT_CD,
+    LVL
+) AS (
+    SELECT
+        BRANCH_CD,
+        BRANCH_NM,
+        BRANCH_CD,
+        ACCT_BRANCH_CD,
+        1
+      FROM BASE_BRANCH bbr
+    UNION ALL
+    SELECT /*+ USE_HASH(bbr) CARDINALITY(bch 100000) */
+        bch.START_BRANCH_CD,
+        bch.START_BRANCH_NM,
+        bbr.BRANCH_CD,
+        bbr.ACCT_BRANCH_CD,
+        bch.LVL + 1
+      FROM BRANCH_CHAIN bch
+      JOIN BASE_BRANCH bbr
+        ON bch.CUR_ACCT_CD = bbr.BRANCH_CD
+     WHERE bch.CUR_BRANCH_CD <> bch.CUR_ACCT_CD
+)
+CYCLE CUR_BRANCH_CD SET IS_CYCLE TO 'Y' DEFAULT 'N'
+SELECT
+    :TARGET_DATE AS TARGET_DATE,
+    START_BRANCH_CD AS BRANCH_CD,
+    MAX(CUR_BRANCH_CD) KEEP (DENSE_RANK LAST ORDER BY LVL) AS FINAL_ACCT_BRANCH_CD
+FROM
+    BRANCH_CHAIN bch
+WHERE
+    IS_CYCLE = 'N'
+GROUP BY
+    START_BRANCH_CD
+ORDER BY
+    BRANCH_CD;
+*/
