@@ -1,45 +1,36 @@
--- [1] 현재 시각에 N초 더하기 (:add_sec 바인드 사용)
+-- [1] SYSTIMESTAMP에 N초 더하기 (:add_sec 바인드)
 SELECT
     CAST(SYSTIMESTAMP + NUMTODSINTERVAL(:add_sec, 'SECOND') AS TIMESTAMP)
 FROM
     DUAL;
 
--- [2] 로그 시간에 N초를 더한 뒤 현재 시각과의 차이를 초 단위로 계산
---     LOG_TIME 형식: YYYYMMDDHH24MISS (예: 20260207153045)
+-- [2] SYSTIMESTAMP에 N시간 더하기 (:add_hour 바인드)
 SELECT
-    ROUND(
-        (SYSDATE - (TO_DATE(LOG_TIME, 'YYYYMMDDHH24MISS') + NUMTODSINTERVAL(:add_sec, 'SECOND')))
-        * 24 * 60 * 60
-    )
+    CAST(SYSTIMESTAMP + NUMTODSINTERVAL(:add_hour, 'HOUR') AS TIMESTAMP) AS ADD_HOUR
 FROM
     DUAL;
 
--- [3] 분 단위 간격 계산 예시 (:add_min 바인드 사용)
+-- [3] SYSTIMESTAMP에 N분 더하기 (:add_min 바인드)
 SELECT
     CAST(SYSTIMESTAMP + NUMTODSINTERVAL(:add_min, 'MINUTE') AS TIMESTAMP) AS ADD_MIN
 FROM
     DUAL;
 
--- [3-1] SYSDATE 기준으로 N일 더하기 (:add_day 바인드 사용)
+-- [4] SYSDATE에 N초 더하기 (:add_sec 바인드)
 SELECT
-    SYSDATE + :add_day AS ADD_DAY
+    SYSDATE + NUMTODSINTERVAL(:add_sec, 'SECOND') AS ADD_SEC
 FROM
     DUAL;
 
--- [3-2] SYSDATE 기준으로 N시간/분/초 더하기 (INTERVAL 사용)
+-- [5] SYSDATE에 N시간 더하기 (:add_hour 바인드)
 SELECT
-    SYSDATE
-    + NUMTODSINTERVAL(:add_hour, 'HOUR')
-    + NUMTODSINTERVAL(:add_min, 'MINUTE')
-    + NUMTODSINTERVAL(:add_sec, 'SECOND') AS ADD_SYS_TIME
+    SYSDATE + NUMTODSINTERVAL(:add_hour, 'HOUR') AS ADD_HOUR
 FROM
     DUAL;
 
--- [4] 두 타임스탬프 간 경과 시간(초) 예시
+-- [6] SYSDATE에 N분 더하기 (:add_min 바인드)
 SELECT
-    EXTRACT(DAY FROM (SYSTIMESTAMP - (SYSTIMESTAMP - INTERVAL '1' HOUR))) * 24 * 60 * 60
-    + EXTRACT(HOUR FROM (SYSTIMESTAMP - (SYSTIMESTAMP - INTERVAL '1' HOUR))) * 60 * 60
-    + EXTRACT(MINUTE FROM (SYSTIMESTAMP - (SYSTIMESTAMP - INTERVAL '1' HOUR))) * 60
-    + EXTRACT(SECOND FROM (SYSTIMESTAMP - (SYSTIMESTAMP - INTERVAL '1' HOUR))) AS ELAPSED_SEC
+    SYSDATE + NUMTODSINTERVAL(:add_min, 'MINUTE') AS ADD_MIN
 FROM
     DUAL;
+
