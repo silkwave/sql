@@ -106,129 +106,167 @@ COMMIT;
 -- =============================================================================
 -- 기준일별 체인 흐름을 사람이 읽기 쉽게 정리한 예시입니다.
 -- 2011-07-21 기준
--- 0007 → 0006
+-- 0004 → 0004
+-- 0005 → 0005
 -- 0006 → 0006
+-- 0007 → 0006
+-- 0008 → 0008
 -- 0009 → 0009
 -- 0010 → 0010
--- 0008 → 0008
--- 0004 → 0004
--- 0005 → 0005
---
+
+
 -- 2012-05-21 기준
--- 0007 → 0006 → 0009
+-- 0004 → 0004
+-- 0005 → 0005
 -- 0006 → 0009
+-- 0007 → 0006 → 0009
+-- 0008 → 0008
 -- 0009 → 0009
 -- 0010 → 0010
--- 0008 → 0008
--- 0004 → 0004
--- 0005 → 0005
---
+
+
 -- 2015-04-22 기준
--- 0007 → 0006 → 0009 → 0008
+-- 0004 → 0004
+-- 0005 → 0005
 -- 0006 → 0009 → 0008
+-- 0007 → 0006 → 0009 → 0008
+-- 0008 → 0008
 -- 0009 → 0008
 -- 0010 → 0010
--- 0008 → 0008
--- 0004 → 0004
--- 0005 → 0005
---
+
+
 -- 2015-04-22 기준(최종 회계 지점만 표기)
--- 0007 → 0008
--- 0006 → 0008
--- 0009 → 0008
--- 0010 → 0010
--- 0008 → 0008
 -- 0004 → 0004
 -- 0005 → 0005
+-- 0006 → 0008
+-- 0007 → 0008
+-- 0008 → 0008
+-- 0009 → 0008
+-- 0010 → 0010
 
 -- =============================================================================
--- 3-0-2. 2015-04-22 기준 조회 SQL 예시
+-- 3-0-2. 2015-04-22 기준 조회 SQL 예시          (오라클 12 이상)
 -- =============================================================================
--- 기준일 시점의 유효 지점만 대상으로 체인을 추적합니다.
+
 
 VAR TARGET_DATE VARCHAR2(8);
 EXEC :TARGET_DATE := '20150422';
 
-WITH
-EFFECTIVE_HIST AS (
-    SELECT /*+ MATERIALIZE INDEX_RS_ASC(bht IDX_BRANCH_HISTORY_DTSEQ) */
-           BRANCH_CD,
-           BRANCH_NM,
-           ACCT_BRANCH_CD,
-           OPEN_DT,
-           CLOSE_DT,
-           -- 기준일 포함 이력을 우선하고, 동일 지점은 최신(REG_SEQ DESC)만 선택
-           ROW_NUMBER() OVER (
-               PARTITION BY BRANCH_CD
-               ORDER BY
-                   CASE
-                       WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0
-                       ELSE 1
-                   END,
-                   REG_SEQ DESC
-           ) AS RN
-      FROM BRANCH_HISTORY bht
+WITH BASE_MAPPING AS (
+    -- 1. 기준일 시점의 유효 이력을 지점별로 1건씩 확정
+    SELECT b.BRANCH_CD, h.ACCT_BRANCH_CD
+      FROM (SELECT DISTINCT BRANCH_CD FROM BRANCH_HISTORY) b
+     CROSS APPLY (
+        SELECT ACCT_BRANCH_CD
+          FROM BRANCH_HISTORY
+         WHERE BRANCH_CD = b.BRANCH_CD
+         ORDER BY 
+               CASE WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0 ELSE 1 END,
+               REG_SEQ DESC
+         FETCH FIRST 1 ROW ONLY
+     ) h
 ),
-BASE_BRANCH AS (
+BRANCH_PATH (START_CD, CUR_CD, NEXT_CD, PATH_STR, LVL) AS (
+    -- 2. Recursive CTE: 경로를 빌드하되, 마지막 노드가 자기 자신이면 멈춤
+    SELECT 
+        BRANCH_CD, 
+        BRANCH_CD, 
+        ACCT_BRANCH_CD, 
+        CAST(BRANCH_CD AS VARCHAR2(4000)), 
+        1
+    FROM BASE_MAPPING
+    UNION ALL
+    SELECT 
+        p.START_CD, 
+        m.BRANCH_CD, 
+        m.ACCT_BRANCH_CD, 
+        p.PATH_STR || ' → ' || m.BRANCH_CD, 
+        p.LVL + 1
+    FROM BRANCH_PATH p
+    JOIN BASE_MAPPING m ON p.NEXT_CD = m.BRANCH_CD
+    WHERE p.CUR_CD <> p.NEXT_CD -- 현재 지점과 다음 지점이 다를 때만 계속 진행
+)
+-- 무한 루프 방지
+CYCLE CUR_CD SET IS_LOOP TO 'Y' DEFAULT 'N'
+-- 3. 최종 출력 포맷팅
+SELECT '-- ' || TO_CHAR(TO_DATE(:TARGET_DATE, 'YYYYMMDD'), 'YYYY-MM-DD') || ' 기준' AS OUTPUT FROM DUAL
+UNION ALL
+SELECT '-- ' || 
+       CASE 
+           -- 규칙 1: 자기 자신인 경우 (LVL 1이고 시작과 끝이 같음) -> 'A → A'
+           WHEN LVL = 1 AND START_CD = NEXT_CD THEN PATH_STR || ' → ' || NEXT_CD
+           -- 규칙 2: 체인이 형성된 경우 -> 빌드된 PATH_STR 그대로 출력
+           ELSE PATH_STR 
+       END
+FROM (
+    -- 각 시작점별로 가장 긴 경로(마지막 단계)만 선택
+    SELECT START_CD, NEXT_CD, PATH_STR, LVL,
+           ROW_NUMBER() OVER(PARTITION BY START_CD ORDER BY LVL DESC) as RN
+    FROM BRANCH_PATH
+    WHERE IS_LOOP = 'N'
+)
+WHERE RN = 1
+ORDER BY 1;
+
+-- =============================================================================
+-- 3-0-2. 2015-04-22 기준 조회 SQL 예시           (오라클 11)
+-- =============================================================================
+-- 기준일 시점의 유효 지점만 대상으로 체인을 추적합니다.
+VAR TARGET_DATE VARCHAR2(8);
+EXEC :TARGET_DATE := '20150422';
+
+WITH EFFECTIVE_HIST AS (
+    -- 1. 기준일 시점의 유효 이력 선정 (11g 호환)
     SELECT /*+ MATERIALIZE */
            BRANCH_CD,
            BRANCH_NM,
-           ACCT_BRANCH_CD
-      -- 지점별 유효 이력 1건만 추출
-      FROM EFFECTIVE_HIST ehs
-     WHERE ehs.RN = 1
+           ACCT_BRANCH_CD,
+           ROW_NUMBER() OVER (
+               PARTITION BY BRANCH_CD 
+               ORDER BY 
+                   CASE WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0 ELSE 1 END,
+                   REG_SEQ DESC
+           ) AS RN
+      FROM BRANCH_HISTORY
 ),
-BRANCH_CHAIN (
-    START_BRANCH_CD,
-    START_BRANCH_NM,
-    CUR_BRANCH_CD,
-    CUR_ACCT_CD,
-    LVL
-) AS (
-    -- 시작 지점(자기 자신)부터 체인을 시작
-    SELECT
-        BRANCH_CD,
-        BRANCH_NM,
-        BRANCH_CD,
-        ACCT_BRANCH_CD,
-        1
-      FROM BASE_BRANCH bbr
-    UNION ALL
-    -- 회계 지점 코드를 따라 체인을 계속 연결
-    SELECT /*+ USE_HASH(bbr) CARDINALITY(bch 100000) */
-        bch.START_BRANCH_CD,
-        bch.START_BRANCH_NM,
-        bbr.BRANCH_CD,
-        bbr.ACCT_BRANCH_CD,
-        bch.LVL + 1
-      FROM BRANCH_CHAIN bch
-      JOIN BASE_BRANCH bbr
-        ON bch.CUR_ACCT_CD = bbr.BRANCH_CD
-     -- 자기 자신으로 향하는 경우는 추가 확장을 방지
-     WHERE bch.CUR_BRANCH_CD <> bch.CUR_ACCT_CD
+BASE_BRANCH AS (
+    -- 2. 각 지점별 1건의 확정 매핑
+    SELECT BRANCH_CD, ACCT_BRANCH_CD
+      FROM EFFECTIVE_HIST
+     WHERE RN = 1
+),
+PATH_DATA AS (
+    -- 3. 계층형 쿼리로 경로 생성
+    SELECT 
+        CONNECT_BY_ROOT(BRANCH_CD) AS START_NODE,
+        -- 경로 생성 (예: 0006 → 0009 → 0008)
+        LTRIM(SYS_CONNECT_BY_PATH(BRANCH_CD, ' → '), ' → ') AS FULL_PATH,
+        ACCT_BRANCH_CD AS FINAL_ACCT,
+        CONNECT_BY_ISLEAF AS IS_LEAF
+    FROM 
+        BASE_BRANCH
+    CONNECT BY NOCYCLE 
+        PRIOR ACCT_BRANCH_CD = BRANCH_CD 
+        AND PRIOR BRANCH_CD <> PRIOR ACCT_BRANCH_CD -- 무한루프 방지
 )
--- 순환 참조가 있을 경우 표시
-CYCLE CUR_BRANCH_CD SET IS_CYCLE TO 'Y' DEFAULT 'N'
-SELECT
-    :TARGET_DATE AS TARGET_DATE,
-    START_BRANCH_CD AS BRANCH_CD,
-    START_BRANCH_NM AS BRANCH_NM,
-    -- 체인 깊이(LVL)가 가장 큰 지점이 최종 회계 지점
-    MAX(CUR_BRANCH_CD) KEEP (DENSE_RANK LAST ORDER BY LVL) AS FINAL_ACCT_BRANCH_CD
-FROM
-    BRANCH_CHAIN bch
--- 순환 제거
-WHERE
-    IS_CYCLE = 'N'
-GROUP BY
-    START_BRANCH_CD,
-    START_BRANCH_NM
-ORDER BY
-    BRANCH_CD;
+-- 4. 최종 포맷팅 출력
+SELECT '-- ' || TO_CHAR(TO_DATE(:TARGET_DATE, 'YYYYMMDD'), 'YYYY-MM-DD') || ' 기준' AS OUTPUT
+FROM DUAL
+UNION ALL
+SELECT '-- ' || 
+       CASE 
+           -- 경로에 화살표가 없고(자기 자신), 시작과 끝이 같으면 'A → A' 형태로 강제 변환
+           WHEN INSTR(FULL_PATH, ' → ') = 0 THEN FULL_PATH || ' → ' || FINAL_ACCT 
+           ELSE FULL_PATH 
+       END
+FROM PATH_DATA
+WHERE IS_LEAF = 1
+ORDER BY OUTPUT;   -- 날짜 헤더가 상단에 오도록 정렬 (실제 운영시 정렬 기준 조정 가능)
+
 
 
 -- =============================================================================
--- 3-0-3. 2015-04-22 기준 최종 회계 지점만 조회 SQL 예시
+-- 3-0-3. 2015-04-22 기준 최종 회계 지점만 조회 SQL 예시    (오라클 12 이상)
 -- =============================================================================
 -- 지점명 없이 최종 회계 지점만 반환하는 경량 조회입니다.
 
@@ -308,4 +346,49 @@ WHERE
 GROUP BY
     START_BRANCH_CD
 ORDER BY
+    BRANCH_CD;
+
+
+-- =============================================================================
+-- 3-0-3. 2015-04-22 기준 최종 회계 지점만 조회 SQL 예시  (오라클 11)
+-- =============================================================================
+-- 지점명 없이 최종 회계 지점만 반환하는 경량 조회입니다.
+
+VAR TARGET_DATE VARCHAR2(8);
+EXEC :TARGET_DATE := '20150422';
+
+WITH EFFECTIVE_HIST AS (
+    -- 1. 기준일 시점의 유효한 지점 이력 추출 (이 부분은 기존 로직 유지)
+    SELECT /*+ MATERIALIZE */
+           BRANCH_CD,
+           BRANCH_NM,
+           ACCT_BRANCH_CD,
+           ROW_NUMBER() OVER (
+               PARTITION BY BRANCH_CD 
+               ORDER BY 
+                   CASE WHEN :TARGET_DATE BETWEEN OPEN_DT AND CLOSE_DT THEN 0 ELSE 1 END,
+                   REG_SEQ DESC
+           ) AS RN
+      FROM BRANCH_HISTORY
+),
+BASE_BRANCH AS (
+    -- 2. 각 지점별 1건의 확정된 매핑 정보를 가공
+    SELECT BRANCH_CD, BRANCH_NM, ACCT_BRANCH_CD
+      FROM EFFECTIVE_HIST
+     WHERE RN = 1
+)
+-- 3. CONNECT BY를 이용한 계층 추적
+SELECT 
+    :TARGET_DATE AS TARGET_DATE,
+    CONNECT_BY_ROOT(BRANCH_CD) AS BRANCH_CD,    -- 시작 지점 코드
+    CONNECT_BY_ROOT(BRANCH_NM) AS BRANCH_NM,    -- 시작 지점 명칭
+    BRANCH_CD AS FINAL_ACCT_BRANCH_CD           -- 최종 도달한 회계 지점
+FROM 
+    BASE_BRANCH
+WHERE 
+    CONNECT_BY_ISLEAF = 1  -- 체인의 마지막(최하위 노드)만 선택
+CONNECT BY NOCYCLE 
+    PRIOR ACCT_BRANCH_CD = BRANCH_CD  -- 이전 단계의 회계지점이 현재의 지점코드인 경우 연결
+    AND PRIOR BRANCH_CD <> PRIOR ACCT_BRANCH_CD -- 자기 자신으로 향하는 루프 방지
+ORDER BY 
     BRANCH_CD;
